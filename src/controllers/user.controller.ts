@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import User from "../models/User.model";
+import uploadBufferToCloudinary from "../utils/uploadToCloudinary";
 
 // Get all job providers
 export const getAllProviders = async (req: Request, res: Response) => {
@@ -140,7 +141,6 @@ export const updateMyProfile = async (req: Request, res: Response) => {
       phone,
       address,
       city,
-      profileImage,
       bio,
       skills,
       experienceLevel,
@@ -157,7 +157,6 @@ export const updateMyProfile = async (req: Request, res: Response) => {
     if (typeof phone === "string") updateData.phone = phone.trim();
     if (typeof address === "string") updateData.address = address.trim();
     if (typeof city === "string") updateData.city = city.trim();
-    if (typeof profileImage === "string") updateData.profileImage = profileImage.trim();
     if (typeof bio === "string") updateData.bio = bio.trim();
     if (typeof availability === "string") updateData.availability = availability.trim();
 
@@ -177,10 +176,20 @@ export const updateMyProfile = async (req: Request, res: Response) => {
 
     if (
       experienceYears !== undefined &&
-      typeof experienceYears === "number" &&
-      experienceYears >= 0
+      typeof Number(experienceYears) === "number" &&
+      !Number.isNaN(Number(experienceYears)) &&
+      Number(experienceYears) >= 0
     ) {
-      updateData.experienceYears = experienceYears;
+      updateData.experienceYears = Number(experienceYears);
+    }
+
+    // Upload provider image if file exists
+    if (req.file) {
+      const imageUrl = await uploadBufferToCloudinary(
+        req.file.buffer,
+        "skilllink/providers"
+      );
+      updateData.profileImage = imageUrl;
     }
 
     if (existingUser.role === "jobProvider") {
@@ -193,7 +202,10 @@ export const updateMyProfile = async (req: Request, res: Response) => {
       }
 
       if (workingHours) {
-        const { startHour, endHour } = workingHours;
+        const parsedWorkingHours =
+          typeof workingHours === "string" ? JSON.parse(workingHours) : workingHours;
+
+        const { startHour, endHour } = parsedWorkingHours;
 
         if (
           !Number.isInteger(startHour) ||

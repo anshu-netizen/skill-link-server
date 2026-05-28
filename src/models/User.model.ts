@@ -28,6 +28,8 @@ export interface IUser extends Document {
   isVerified: boolean;
   emailVerificationToken?: string;
   emailVerificationTokenExpires?: Date;
+  averageRating?: number;
+  totalReviews?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -130,6 +132,18 @@ const userSchema = new Schema<IUser>(
     },
     emailVerificationTokenExpires: {
       type: Date,
+      default: null,
+    },
+    averageRating: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 5,
+    },
+    totalReviews: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
   },
   {

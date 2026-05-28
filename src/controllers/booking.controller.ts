@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import Booking from "../models/Booking.model";
 import User from "../models/User.model";
+import sendEmail from "../utils/sendEmail";
 
 const ACTIVE_BOOKING_STATUSES = ["pending", "accepted", "in_progress"];
 const BUFFER_MS = 60 * 60 * 1000; // 1 hour
@@ -14,6 +15,103 @@ const formatDateTimeLocal = (date: Date) => {
   const minutes = String(date.getMinutes()).padStart(2, "0");
 
   return `${year}-${month}-${day}T${hours}:${minutes}`;
+};
+
+const formatEmailDate = (dateValue: Date | string) => {
+  return new Date(dateValue).toLocaleString();
+};
+
+const sendBookingEmailSafely = async ({
+  to,
+  subject,
+  html,
+}: {
+  to?: string;
+  subject: string;
+  html: string;
+}) => {
+  try {
+    if (!to) return;
+    await sendEmail({ to, subject, html });
+  } catch (error) {
+    console.error("EMAIL ERROR:", error);
+  }
+};
+
+const getBookingEmailHtml = ({
+  title,
+  intro,
+  serviceTitle,
+  bookingDate,
+  durationMinutes,
+  address,
+  city,
+  price,
+  status,
+  seekerName,
+  providerName,
+}: {
+  title: string;
+  intro: string;
+  serviceTitle: string;
+  bookingDate: Date | string;
+  durationMinutes?: number;
+  address?: string;
+  city?: string;
+  price?: number;
+  status: string;
+  seekerName?: string;
+  providerName?: string;
+}) => {
+  return `
+    <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto; padding: 24px; color: #111827;">
+      <div style="background: #0F4AA1; padding: 20px; border-radius: 12px 12px 0 0; color: white;">
+        <h2 style="margin: 0;">${title}</h2>
+      </div>
+
+      <div style="border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px; padding: 24px;">
+        <p style="margin-top: 0; font-size: 15px; line-height: 1.6;">${intro}</p>
+
+        <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; margin-top: 16px;">
+          <p style="margin: 8px 0;"><strong>Service:</strong> ${serviceTitle}</p>
+          <p style="margin: 8px 0;"><strong>Date & Time:</strong> ${formatEmailDate(
+            bookingDate
+          )}</p>
+          ${
+            durationMinutes
+              ? `<p style="margin: 8px 0;"><strong>Duration:</strong> ${durationMinutes} minutes</p>`
+              : ""
+          }
+          ${
+            seekerName
+              ? `<p style="margin: 8px 0;"><strong>Seeker:</strong> ${seekerName}</p>`
+              : ""
+          }
+          ${
+            providerName
+              ? `<p style="margin: 8px 0;"><strong>Provider:</strong> ${providerName}</p>`
+              : ""
+          }
+          ${
+            address
+              ? `<p style="margin: 8px 0;"><strong>Address:</strong> ${address}</p>`
+              : ""
+          }
+          ${city ? `<p style="margin: 8px 0;"><strong>City:</strong> ${city}</p>` : ""}
+          ${
+            price !== undefined
+              ? `<p style="margin: 8px 0;"><strong>Price:</strong> Rs. ${price}</p>`
+              : ""
+          }
+          <p style="margin: 8px 0;"><strong>Status:</strong> ${status}</p>
+        </div>
+
+        <p style="margin-top: 20px; font-size: 14px; color: #6b7280;">
+          Thank you for using SkillLink.
+        </p>
+      </div>
+    </div>
+  `;
 };
 
 // CREATE BOOKING (job seeker only)
@@ -157,6 +255,48 @@ export const createBooking = async (req: Request, res: Response) => {
         "fullName email phone city skills experienceLevel workingHours availability companyName companyDescription bio profileImage"
       );
 
+    if (populatedBooking) {
+      const bookingData: any = populatedBooking;
+      const seeker = bookingData.seeker;
+      const providerData = bookingData.provider;
+
+      void sendBookingEmailSafely({
+        to: providerData?.email,
+        subject: "New Booking Request",
+        html: getBookingEmailHtml({
+          title: "New Booking Request",
+          intro: `You have received a new booking request from ${seeker?.fullName || "a customer"}.`,
+          serviceTitle: bookingData.serviceTitle,
+          bookingDate: bookingData.bookingDate,
+          durationMinutes: bookingData.durationMinutes,
+          address: bookingData.address,
+          city: bookingData.city,
+          price: bookingData.price,
+          status: "pending",
+          seekerName: seeker?.fullName,
+          providerName: providerData?.fullName,
+        }),
+      });
+
+      void sendBookingEmailSafely({
+        to: seeker?.email,
+        subject: "Booking Request Submitted",
+        html: getBookingEmailHtml({
+          title: "Booking Request Submitted",
+          intro: `Your booking request has been submitted successfully and is waiting for provider approval.`,
+          serviceTitle: bookingData.serviceTitle,
+          bookingDate: bookingData.bookingDate,
+          durationMinutes: bookingData.durationMinutes,
+          address: bookingData.address,
+          city: bookingData.city,
+          price: bookingData.price,
+          status: "pending",
+          seekerName: seeker?.fullName,
+          providerName: providerData?.fullName,
+        }),
+      });
+    }
+
     return res.status(201).json({
       success: true,
       message: "Booking created successfully",
@@ -279,9 +419,12 @@ export const getBookingById = async (req: Request, res: Response) => {
       });
     }
 
-    const isSeeker = String(booking.seeker?._id || booking.seeker) === String(user._id);
+    const isSeeker =
+      String((booking as any).seeker?._id || (booking as any).seeker) ===
+      String(user._id);
     const isProvider =
-      String(booking.provider?._id || booking.provider) === String(user._id);
+      String((booking as any).provider?._id || (booking as any).provider) ===
+      String(user._id);
 
     if (!isSeeker && !isProvider) {
       return res.status(403).json({
@@ -366,6 +509,202 @@ export const updateBookingStatus = async (req: Request, res: Response) => {
         "provider",
         "fullName email phone city skills experienceLevel workingHours availability companyName companyDescription bio profileImage"
       );
+
+    if (updatedBooking) {
+      const bookingData: any = updatedBooking;
+      const seeker = bookingData.seeker;
+      const providerData = bookingData.provider;
+
+      if (status === "accepted") {
+        void sendBookingEmailSafely({
+          to: seeker?.email,
+          subject: "Booking Accepted",
+          html: getBookingEmailHtml({
+            title: "Booking Accepted",
+            intro: `${providerData?.fullName || "Your provider"} has accepted your booking request.`,
+            serviceTitle: bookingData.serviceTitle,
+            bookingDate: bookingData.bookingDate,
+            durationMinutes: bookingData.durationMinutes,
+            address: bookingData.address,
+            city: bookingData.city,
+            price: bookingData.price,
+            status: "accepted",
+            seekerName: seeker?.fullName,
+            providerName: providerData?.fullName,
+          }),
+        });
+
+        void sendBookingEmailSafely({
+          to: providerData?.email,
+          subject: "You Accepted a Booking",
+          html: getBookingEmailHtml({
+            title: "Booking Accepted",
+            intro: `You have successfully accepted this booking.`,
+            serviceTitle: bookingData.serviceTitle,
+            bookingDate: bookingData.bookingDate,
+            durationMinutes: bookingData.durationMinutes,
+            address: bookingData.address,
+            city: bookingData.city,
+            price: bookingData.price,
+            status: "accepted",
+            seekerName: seeker?.fullName,
+            providerName: providerData?.fullName,
+          }),
+        });
+      }
+
+      if (status === "rejected") {
+        void sendBookingEmailSafely({
+          to: seeker?.email,
+          subject: "Booking Rejected",
+          html: getBookingEmailHtml({
+            title: "Booking Rejected",
+            intro: `Unfortunately, your booking request has been rejected. Please choose another slot or provider.`,
+            serviceTitle: bookingData.serviceTitle,
+            bookingDate: bookingData.bookingDate,
+            durationMinutes: bookingData.durationMinutes,
+            address: bookingData.address,
+            city: bookingData.city,
+            price: bookingData.price,
+            status: "rejected",
+            seekerName: seeker?.fullName,
+            providerName: providerData?.fullName,
+          }),
+        });
+
+        void sendBookingEmailSafely({
+          to: providerData?.email,
+          subject: "Booking Rejected",
+          html: getBookingEmailHtml({
+            title: "Booking Rejected",
+            intro: `You have rejected this booking request.`,
+            serviceTitle: bookingData.serviceTitle,
+            bookingDate: bookingData.bookingDate,
+            durationMinutes: bookingData.durationMinutes,
+            address: bookingData.address,
+            city: bookingData.city,
+            price: bookingData.price,
+            status: "rejected",
+            seekerName: seeker?.fullName,
+            providerName: providerData?.fullName,
+          }),
+        });
+      }
+
+      if (status === "in_progress") {
+        void sendBookingEmailSafely({
+          to: seeker?.email,
+          subject: "Booking In Progress",
+          html: getBookingEmailHtml({
+            title: "Booking In Progress",
+            intro: `Your booking is now in progress.`,
+            serviceTitle: bookingData.serviceTitle,
+            bookingDate: bookingData.bookingDate,
+            durationMinutes: bookingData.durationMinutes,
+            address: bookingData.address,
+            city: bookingData.city,
+            price: bookingData.price,
+            status: "in_progress",
+            seekerName: seeker?.fullName,
+            providerName: providerData?.fullName,
+          }),
+        });
+
+        void sendBookingEmailSafely({
+          to: providerData?.email,
+          subject: "Booking Marked In Progress",
+          html: getBookingEmailHtml({
+            title: "Booking In Progress",
+            intro: `You marked this booking as in progress.`,
+            serviceTitle: bookingData.serviceTitle,
+            bookingDate: bookingData.bookingDate,
+            durationMinutes: bookingData.durationMinutes,
+            address: bookingData.address,
+            city: bookingData.city,
+            price: bookingData.price,
+            status: "in_progress",
+            seekerName: seeker?.fullName,
+            providerName: providerData?.fullName,
+          }),
+        });
+      }
+
+      if (status === "completed") {
+        void sendBookingEmailSafely({
+          to: seeker?.email,
+          subject: "Booking Completed",
+          html: getBookingEmailHtml({
+            title: "Booking Completed",
+            intro: `Your service has been marked as completed.`,
+            serviceTitle: bookingData.serviceTitle,
+            bookingDate: bookingData.bookingDate,
+            durationMinutes: bookingData.durationMinutes,
+            address: bookingData.address,
+            city: bookingData.city,
+            price: bookingData.price,
+            status: "completed",
+            seekerName: seeker?.fullName,
+            providerName: providerData?.fullName,
+          }),
+        });
+
+        void sendBookingEmailSafely({
+          to: providerData?.email,
+          subject: "Booking Completed Successfully",
+          html: getBookingEmailHtml({
+            title: "Booking Completed",
+            intro: `You have successfully completed this booking.`,
+            serviceTitle: bookingData.serviceTitle,
+            bookingDate: bookingData.bookingDate,
+            durationMinutes: bookingData.durationMinutes,
+            address: bookingData.address,
+            city: bookingData.city,
+            price: bookingData.price,
+            status: "completed",
+            seekerName: seeker?.fullName,
+            providerName: providerData?.fullName,
+          }),
+        });
+      }
+
+      if (status === "cancelled") {
+        void sendBookingEmailSafely({
+          to: seeker?.email,
+          subject: "Booking Cancelled",
+          html: getBookingEmailHtml({
+            title: "Booking Cancelled",
+            intro: `This booking has been cancelled.`,
+            serviceTitle: bookingData.serviceTitle,
+            bookingDate: bookingData.bookingDate,
+            durationMinutes: bookingData.durationMinutes,
+            address: bookingData.address,
+            city: bookingData.city,
+            price: bookingData.price,
+            status: "cancelled",
+            seekerName: seeker?.fullName,
+            providerName: providerData?.fullName,
+          }),
+        });
+
+        void sendBookingEmailSafely({
+          to: providerData?.email,
+          subject: "Booking Cancelled",
+          html: getBookingEmailHtml({
+            title: "Booking Cancelled",
+            intro: `This booking has been cancelled.`,
+            serviceTitle: bookingData.serviceTitle,
+            bookingDate: bookingData.bookingDate,
+            durationMinutes: bookingData.durationMinutes,
+            address: bookingData.address,
+            city: bookingData.city,
+            price: bookingData.price,
+            status: "cancelled",
+            seekerName: seeker?.fullName,
+            providerName: providerData?.fullName,
+          }),
+        });
+      }
+    }
 
     return res.status(200).json({
       success: true,
@@ -474,7 +813,7 @@ export const getProviderAvailableSlots = async (req: Request, res: Response) => 
       const requestedBlockedStart = new Date(slotStart.getTime() - BUFFER_MS);
       const requestedBlockedEnd = new Date(slotEnd.getTime() + BUFFER_MS);
 
-      const hasConflict = existingBookings.some((booking) => {
+      const hasConflict = existingBookings.some((booking: any) => {
         const existingStart = new Date(booking.bookingDate);
         const existingEnd = new Date(booking.endTime);
 

@@ -5,6 +5,36 @@ import User from "../models/User.model";
 import generateToken from "../utils/generateToken";
 import sendEmail from "../utils/sendEmail";
 
+const buildVerificationEmailHtml = (fullName: string, verifyUrl: string) => {
+  return `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px;">
+      <h2 style="color: #111827;">Verify your email</h2>
+      <p>Hello ${fullName},</p>
+      <p>Thanks for registering on SkillLink.</p>
+      <p>Please click the button below to verify your email address:</p>
+
+      <a
+        href="${verifyUrl}"
+        style="
+          display: inline-block;
+          background-color: #2563eb;
+          color: #ffffff;
+          text-decoration: none;
+          padding: 12px 20px;
+          border-radius: 8px;
+          margin: 16px 0;
+          font-weight: 600;
+        "
+      >
+        Verify Email
+      </a>
+
+      <p>This link will expire in 1 hour.</p>
+      <p>If you did not create this account, you can ignore this email.</p>
+    </div>
+  `;
+};
+
 // Register user
 export const registerUser = async (req: Request, res: Response) => {
   try {
@@ -80,7 +110,7 @@ export const registerUser = async (req: Request, res: Response) => {
       isActive: true,
       isVerified: false,
       emailVerificationToken: hashedVerificationToken,
-      emailVerificationTokenExpires: new Date(Date.now() + 1000 * 60 * 60), // 1 hour
+      emailVerificationTokenExpires: new Date(Date.now() + 1000 * 60 * 60),
     };
 
     if (role === "jobSeeker") {
@@ -114,41 +144,51 @@ export const registerUser = async (req: Request, res: Response) => {
 
     const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${rawVerificationToken}`;
 
-    await sendEmail({
-      to: user.email,
-      subject: "Verify your SkillLink account",
-      html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.6;">
-          <h2>Verify your email</h2>
-          <p>Hello ${user.fullName},</p>
-          <p>Click the button below to verify your SkillLink account:</p>
-          <a
-            href="${verifyUrl}"
-            style="display:inline-block;padding:12px 20px;background:#2563eb;color:#fff;text-decoration:none;border-radius:8px;"
-          >
-            Verify Email
-          </a>
-          <p style="margin-top:16px;">This link will expire in 1 hour.</p>
-        </div>
-      `,
-    });
+    try {
+      await sendEmail({
+        to: user.email,
+        subject: "Verify your SkillLink account",
+        html: buildVerificationEmailHtml(user.fullName, verifyUrl),
+      });
 
-    return res.status(201).json({
-      success: true,
-      message: "User registered successfully. Verification email sent.",
-      user: {
-        _id: user._id,
-        fullName: user.fullName,
-        email: user.email,
-        role: user.role,
-        isVerified: user.isVerified,
-      },
-    });
+      return res.status(201).json({
+        success: true,
+        message: "User registered successfully. Verification email sent.",
+        user: {
+          _id: user._id,
+          fullName: user.fullName,
+          email: user.email,
+          role: user.role,
+          isVerified: user.isVerified,
+        },
+      });
+    } catch (emailError) {
+      console.error("EMAIL SEND ERROR FULL:", emailError);
+
+      return res.status(201).json({
+        success: true,
+        message:
+          emailError instanceof Error
+            ? `User registered successfully, but verification email could not be sent: ${emailError.message}`
+            : "User registered successfully, but verification email could not be sent.",
+        user: {
+          _id: user._id,
+          fullName: user.fullName,
+          email: user.email,
+          role: user.role,
+          isVerified: user.isVerified,
+        },
+      });
+    }
   } catch (error) {
-    console.error("REGISTER ERROR:", error);
+    console.error("REGISTER ERROR FULL:", error);
+
     return res.status(500).json({
       success: false,
-      message: "Server error while registering user",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Server error while registering user",
     });
   }
 };
@@ -194,9 +234,110 @@ export const verifyEmail = async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error("VERIFY EMAIL ERROR:", error);
+
     return res.status(500).json({
       success: false,
-      message: "Server error while verifying email",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Server error while verifying email",
+    });
+  }
+};
+
+// Resend verification email
+export const resendVerificationEmail = async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required",
+      });
+    }
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    if (user.isVerified) {
+      return res.status(400).json({
+        success: false,
+        message: "User is already verified",
+      });
+    }
+
+    const rawVerificationToken = crypto.randomBytes(32).toString("hex");
+    const hashedVerificationToken = crypto
+      .createHash("sha256")
+      .update(rawVerificationToken)
+      .digest("hex");
+
+    user.emailVerificationToken = hashedVerificationToken;
+    user.emailVerificationTokenExpires = new Date(Date.now() + 1000 * 60 * 60);
+
+    await user.save();
+
+    const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${rawVerificationToken}`;
+
+    await sendEmail({
+      to: user.email,
+      subject: "Verify your SkillLink account",
+      html: buildVerificationEmailHtml(user.fullName, verifyUrl),
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Verification email resent successfully",
+    });
+  } catch (error) {
+    console.error("RESEND VERIFICATION EMAIL ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Server error while resending verification email",
+    });
+  }
+};
+
+// Test email
+export const testEmail = async (req: Request, res: Response) => {
+  try {
+    const { to } = req.query;
+
+    if (!to || typeof to !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Query param 'to' is required",
+      });
+    }
+
+    await sendEmail({
+      to,
+      subject: "SkillLink Test Email",
+      html: "<h1>Email is working 🎉</h1><p>Your email config is correct.</p>",
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Test email sent successfully",
+    });
+  } catch (error) {
+    console.error("TEST EMAIL ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error instanceof Error ? error.message : "Failed to send test email",
     });
   }
 };
@@ -266,9 +407,13 @@ export const loginUser = async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error("LOGIN ERROR:", error);
+
     return res.status(500).json({
       success: false,
-      message: "Server error while logging in",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Server error while logging in",
     });
   }
 };
@@ -289,9 +434,13 @@ export const getMe = async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error("GET ME ERROR:", error);
+
     return res.status(500).json({
       success: false,
-      message: "Server error while fetching current user",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Server error while fetching current user",
     });
   }
 };
